@@ -1539,6 +1539,10 @@ void work_i(const size_t local_num) {
 		char *cache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE);
 		if (cache == nullptr) ShowMemErrorExit();
 
+		//PoC2 Cache
+		char *MirrorCache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE);
+		if (MirrorCache == nullptr) ShowMemErrorExit();
+
 		Log("\nRead file : ");	Log((char*)iter->Name.c_str());
 		
 		//wprintw(win_main, "%S \n", str2wstr(iter->Path + iter->Name).c_str());
@@ -1549,6 +1553,7 @@ void work_i(const size_t local_num) {
 			wprintw(win_main, "File \"%s\" error opening. code = %llu\n", iter->Name.c_str(), GetLastError(), 0);
 			wattroff(win_main, COLOR_PAIR(12));
 			VirtualFree(cache, 0, MEM_RELEASE);
+			VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
 			continue;
 		}
 		files_size_per_thread += iter->Size;
@@ -1556,11 +1561,17 @@ void work_i(const size_t local_num) {
 		unsigned long long start, bytes;
 		DWORD b = 0;
 		LARGE_INTEGER liDistanceToMove;
+		
+		//PoC2 Vars
+		unsigned long long MirrorStart, Mirrorbytes;
+		DWORD Mirrorb = 0;
+		LARGE_INTEGER MirrorliDistanceToMove;
 
 		size_t acc = Get_index_acc(key);
 		for (unsigned long long n = 0; n < nonces; n += stagger)
 		{
 			start = n * 4096 * 64 + scoop * stagger * 64;
+			MirrorStart = n * 4096 * 64 + (4095 - scoop) * stagger * 64; //PoC2 Seek possition
 			for (unsigned long long i = 0; i < stagger; i += cache_size_local)
 			{
 				if (i + cache_size_local > stagger)
@@ -1604,6 +1615,35 @@ void work_i(const size_t local_num) {
 					bytes += b;
 					//wprintw(win_main, "%llu   %llu\n", bytes, readsize);
 				} while (bytes < cache_size_local * 64);
+
+				//PoC2 Read Mirror Scoop
+				bytes = 0;
+				Mirrorb = 0;
+				MirrorliDistanceToMove.QuadPart = MirrorStart + i * 64;
+
+				if (!SetFilePointerEx(ifile, MirrorliDistanceToMove, nullptr, FILE_BEGIN))
+				{
+					wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
+					continue;
+				}
+
+				do {
+					if (!ReadFile(ifile, &MirrorCache[bytes], (DWORD)(cache_size_local * 64), &Mirrorb, NULL))
+					{
+						wattron(win_main, COLOR_PAIR(12));
+						wprintw(win_main, "error ReadFile. code = %llu\n", GetLastError(), 0);
+						wattroff(win_main, COLOR_PAIR(12));
+						break;
+					}
+					bytes += Mirrorb;
+
+				} while (bytes < cache_size_local * 64);
+				//PoC2
+				//Merge data to Cache
+				for (i = 0; i < cache_size_local * 64; i + 64) {
+					memcpy(&cache[i + 32], &MirrorCache[i + 32], 32);
+				}
+
 
 				if (bytes == cache_size_local * 64)
 				{
