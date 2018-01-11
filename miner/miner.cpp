@@ -1563,7 +1563,7 @@ void work_i(const size_t local_num) {
 		LARGE_INTEGER liDistanceToMove;
 		
 		//PoC2 Vars
-		unsigned long long MirrorStart, Mirrorbytes;
+		unsigned long long MirrorStart;
 		DWORD Mirrorb = 0;
 		LARGE_INTEGER MirrorliDistanceToMove;
 
@@ -1638,12 +1638,13 @@ void work_i(const size_t local_num) {
 					bytes += Mirrorb;
 
 				} while (bytes < cache_size_local * 64);
-				//PoC2
+			
+			//PoC2
 				//Merge data to Cache
-				for (i = 0; i < cache_size_local * 64; i + 64) {
-					memcpy(&cache[i + 32], &MirrorCache[i + 32], 32);
+				for (unsigned long t = 0; t < bytes; t += 64) {
+					memcpy(&cache[t + 32], &MirrorCache[t + 32], 32); //copy second hash to correct place.
 				}
-
+				
 
 				if (bytes == cache_size_local * 64)
 				{
