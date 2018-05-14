@@ -270,8 +270,8 @@ int load_config(char const *const filename)
 		if (document.HasMember("WinSizeY") && (document["WinSizeY"].IsUint())) win_size_y = (short)document["WinSizeY"].GetUint();
 		Log_u(win_size_y);
 
-		Log("\POC2HFBlock: ");
-		if (document.HasMember("POC2HFBlock") && (document["POC2HFBlock"].IsUint())) POC2HFBlock = (short)document["POC2HFBlock"].GetUint64();
+		Log("\POC2StartBlock: ");
+		if (document.HasMember("POC2StartBlock") && (document["POC2StartBlock"].IsUint())) POC2StartBlock = (short)document["POC2StartBlock"].GetUint64();
 		Log_u(win_size_y);
 
 #ifdef GPU_ON_C
@@ -2096,7 +2096,7 @@ void pollLocal(void) {
 									}
 
 									//POC2 determination
-									if (height >= POC2HFBlock) {
+									if (height >= POC2StartBlock) {
 										POC2 = true;
 									}
 
