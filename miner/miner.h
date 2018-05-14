@@ -53,12 +53,12 @@ HANDLE hHeap;
 
 bool exit_flag = false;
 #ifdef __AVX2__
-	char const *const version = "v1.170820_AVX2";
+	char const *const version = "v1.170820_AVX2_POC2";
 #else
 	#ifdef __AVX__
-		char const *const version = "v1.170820_AVX";
+		char const *const version = "v1.170820_AVX_POC2";
 	#else
-		char const *const version = "v1.170820";
+		char const *const version = "v1.170820_POC2";
 	#endif
 #endif 
 
@@ -91,6 +91,7 @@ std::string proxyport = "8125";		// порт пула
 char *p_minerPath = nullptr;		// путь к папке майнера
 size_t miner_mode = 0;				// режим майнера. 0=соло, 1=пул
 size_t cache_size = 100000;			// размер кэша чтения плотов
+size_t cache_size2 = 100000;		// размер кэша чтения плотов POC2
 std::vector<std::string> paths_dir; // пути
 //bool show_msg = false;				// Показать общение с сервером в отправщике
 //bool show_updates = false;			// Показать общение с сервером в апдейтере
@@ -108,13 +109,18 @@ bool use_log = true;				// Вести лог
 bool use_boost = false;				// Использовать повышенный приоритет для потоков
 bool show_winner = false;			// показывать победителя
 //short can_generate = 0;				// 0 - disable; 1 - can start generate; 2 - already run generator
-
+//POC2: HF Block where POC2 gets active
+unsigned long long POC2HFBlock = 500000;
+//indicates if POC2 is active
+bool POC2 = false;
 
 SYSTEMTIME cur_time;				// Текущее время
 unsigned long long total_size = 0;	// Общий объем плотов
 
 WINDOW * win_main;
 //PANEL  *panel_main;
+
+
 
 std::vector<std::thread> worker;
 
@@ -136,6 +142,7 @@ struct t_files{
 	unsigned long long StartNonce;
 	unsigned long long Nonces;
 	unsigned long long Stagger;
+	bool P2;
 	//unsigned State;// = 0;
 	//t_files(std::string p_Path, std::string p_Name, unsigned long long p_Size, unsigned p_State) : Path(std::move(p_Path)), Name(std::move(p_Name)), Size(p_Size), State(p_State){};
 	//t_files(t_files &&fill) : Path(std::move(fill.Path)), Name(std::move(fill.Name)), Size(fill.Size), State(fill.State){};

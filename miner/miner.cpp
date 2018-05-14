@@ -192,6 +192,10 @@ int load_config(char const *const filename)
 		if(document.HasMember("CacheSize") && (document["CacheSize"].IsUint64())) cache_size = document["CacheSize"].GetUint64();
 		Log_u(cache_size);
 		
+		Log("\nCacheSize2: ");
+		if (document.HasMember("CacheSize2") && (document["CacheSize2"].IsUint64())) cache_size2 = document["CacheSize2"].GetUint64();
+		Log_u(cache_size2);
+
 		Log("\nUseHDDWakeUp: ");
 		if(document.HasMember("UseHDDWakeUp") && (document["UseHDDWakeUp"].IsBool())) use_wakeup = document["UseHDDWakeUp"].GetBool();
 		Log_u(use_wakeup);
@@ -263,7 +267,11 @@ int load_config(char const *const filename)
 		Log_u(win_size_x);
 
 		Log("\nWinSizeY: ");
-		if(document.HasMember("WinSizeY") && (document["WinSizeY"].IsUint())) win_size_y = (short)document["WinSizeY"].GetUint();
+		if (document.HasMember("WinSizeY") && (document["WinSizeY"].IsUint())) win_size_y = (short)document["WinSizeY"].GetUint();
+		Log_u(win_size_y);
+
+		Log("\POC2HFBlock: ");
+		if (document.HasMember("POC2HFBlock") && (document["POC2HFBlock"].IsUint())) POC2HFBlock = (short)document["POC2HFBlock"].GetUint64();
 		Log_u(win_size_y);
 
 #ifdef GPU_ON_C
@@ -434,15 +442,31 @@ size_t GetFiles(const std::string &str, std::vector <t_files> *p_files)
 							unsigned long long key, nonce, nonces, stagger;
 							if (sscanf_s(FindFileData.cFileName, "%llu_%llu_%llu_%llu", &key, &nonce, &nonces, &stagger) == 4)
 							{
+								bool p2 = false;
 								p_files->push_back({
 									*iter,
 									FindFileData.cFileName,
 									(((static_cast<ULONGLONG>(FindFileData.nFileSizeHigh) << (sizeof(FindFileData.nFileSizeLow) * 8)) | FindFileData.nFileSizeLow)),
-									key, nonce, nonces, stagger
+									key, nonce, nonces, stagger, p2
 								});
 								count++;
 							}
+
 						}
+						//POC2 FILE
+						unsigned long long key, nonce, nonces;
+						if (sscanf_s(FindFileData.cFileName, "%llu_%llu_%llu_%llu", &key, &nonce, &nonces) == 3)
+						{
+							bool p2 = true;
+							p_files->push_back({
+								*iter,
+								FindFileData.cFileName,
+								(((static_cast<ULONGLONG>(FindFileData.nFileSizeHigh) << (sizeof(FindFileData.nFileSizeLow) * 8)) | FindFileData.nFileSizeLow)),
+								key, nonce, nonces, nonces, p2
+								});
+							count++;
+						}
+
 					}
 				}
 			} while (FindNextFileA(hFile, &FindFileData));
@@ -1453,11 +1477,13 @@ void work_i(const size_t local_num) {
 	for (auto iter = files.begin(); iter != files.end(); ++iter)
 	{
 		unsigned long long key, nonce, nonces, stagger, tail;
+		bool p2;
 		QueryPerformanceCounter((LARGE_INTEGER*)&start_time_read);
 		key = iter->Key;
 		nonce = iter->StartNonce;
 		nonces = iter->Nonces;
 		stagger = iter->Stagger;
+		p2 = iter->P2;
 		tail = 0;
 		// Проверка кратности нонсов стаггеру
 		if ((double)(nonces % stagger) > DBL_EPSILON)
@@ -1527,14 +1553,18 @@ void work_i(const size_t local_num) {
 			//continue;
 		}
 
-
-		if ((stagger == nonces) && (cache_size < stagger)) cache_size_local = cache_size;  // оптимизированный плот
-		else cache_size_local = stagger; // обычный плот
+		//Poc2 cache size added
+		if (p2 != POC2) {
+			if ((stagger == nonces) && (cache_size2 < stagger)) cache_size_local = cache_size2;  // оптимизированный плот
+			else cache_size_local = stagger; // обычный плот
+		}else{
+			if ((stagger == nonces) && (cache_size < stagger)) cache_size_local = cache_size;  // оптимизированный плот
+			else cache_size_local = stagger; // обычный плот
+		}
 
 		// Выравниваем cache_size_local по размеру сектора
 		cache_size_local = (cache_size_local / (size_t)(bytesPerSector / 64)) * (size_t)(bytesPerSector / 64);
 		//wprintw(win_main, "round: %llu\n", cache_size_local);
-
 
 		char *cache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE);
 		if (cache == nullptr) ShowMemErrorExit();
@@ -1608,7 +1638,7 @@ void work_i(const size_t local_num) {
 					if (!ReadFile(ifile, &cache[bytes], (DWORD)(cache_size_local * 64), &b, NULL))
 					{
 						wattron(win_main, COLOR_PAIR(12));
-						wprintw(win_main, "error ReadFile. code = %llu\n", GetLastError(), 0);
+						wprintw(win_main, ("error ReadFile. code =" + iter->Path + iter->Name + "\n").c_str(), 0);
 						wattroff(win_main, COLOR_PAIR(12));
 						break;
 					}
@@ -1616,35 +1646,43 @@ void work_i(const size_t local_num) {
 					//wprintw(win_main, "%llu   %llu\n", bytes, readsize);
 				} while (bytes < cache_size_local * 64);
 
-				//PoC2 Read Mirror Scoop
-				bytes = 0;
-				Mirrorb = 0;
-				MirrorliDistanceToMove.QuadPart = MirrorStart + i * 64;
-
-				if (!SetFilePointerEx(ifile, MirrorliDistanceToMove, nullptr, FILE_BEGIN))
-				{
-					wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
-					continue;
+				//Shuffle if file POC not matching network POC
+				if (p2 != POC2 && i == 0) {
+					wattron(win_main, COLOR_PAIR(11));
+					wprintw(win_main, ("POC shuffling active for: " + iter->Path + iter->Name + "\n").c_str(), 0);
+					wattroff(win_main, COLOR_PAIR(11));
 				}
 
-				do {
-					if (!ReadFile(ifile, &MirrorCache[bytes], (DWORD)(cache_size_local * 64), &Mirrorb, NULL))
+				if (p2 != POC2) {
+					//PoC2 Read Mirror Scoop
+					bytes = 0;
+					Mirrorb = 0;
+					MirrorliDistanceToMove.QuadPart = MirrorStart + i * 64;
+
+					if (!SetFilePointerEx(ifile, MirrorliDistanceToMove, nullptr, FILE_BEGIN))
 					{
-						wattron(win_main, COLOR_PAIR(12));
-						wprintw(win_main, "error ReadFile. code = %llu\n", GetLastError(), 0);
-						wattroff(win_main, COLOR_PAIR(12));
-						break;
+						wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
+						continue;
 					}
-					bytes += Mirrorb;
 
-				} while (bytes < cache_size_local * 64);
-			
-			//PoC2
-				//Merge data to Cache
-				for (unsigned long t = 0; t < bytes; t += 64) {
-					memcpy(&cache[t + 32], &MirrorCache[t + 32], 32); //copy second hash to correct place.
+					do {
+						if (!ReadFile(ifile, &MirrorCache[bytes], (DWORD)(cache_size_local * 64), &Mirrorb, NULL))
+						{
+							wattron(win_main, COLOR_PAIR(12));
+							wprintw(win_main, "error ReadFile. code = %llu\n", GetLastError(), 0);
+							wattroff(win_main, COLOR_PAIR(12));
+							break;
+						}
+						bytes += Mirrorb;
+
+					} while (bytes < cache_size_local * 64);
+
+					//PoC2
+					//Merge data to Cache
+					for (unsigned long t = 0; t < bytes; t += 64) {
+						memcpy(&cache[t + 32], &MirrorCache[t + 32], 32); //copy second hash to correct place.
+					}
 				}
-				
 
 				if (bytes == cache_size_local * 64)
 				{
@@ -2055,6 +2093,11 @@ void pollLocal(void) {
 										if (gmi["height"].IsString())	height = _strtoui64(gmi["height"].GetString(), 0, 10);
 										else
 											if (gmi["height"].IsInt64()) height = gmi["height"].GetInt64();
+									}
+
+									//POC2 determination
+									if (height >= POC2HFBlock) {
+										POC2 = true;
 									}
 
 									if (gmi.HasMember("generationSignature")) {
@@ -2969,10 +3012,10 @@ int main(int argc, char **argv) {
 
 
 		Log("\n------------------------    New block: "); Log_llu(height);
-
+		
 		_strtime_s(tbuffer);
 		wattron(win_main, COLOR_PAIR(25));
-		wprintw(win_main, "\n%s New block %llu, baseTarget %llu, netDiff %llu Tb          \n", tbuffer, height, baseTarget, 4398046511104 / 240 / baseTarget, 0);
+		wprintw(win_main, "\n%s New block %llu, baseTarget %llu, netDiff %llu Tb, POC%i      \n", tbuffer, height, baseTarget, 4398046511104 / 240 / baseTarget, POC2 ? 2 : 1,0);
 		wattron(win_main, COLOR_PAIR(25));
 		if (miner_mode == 0)
 		{
