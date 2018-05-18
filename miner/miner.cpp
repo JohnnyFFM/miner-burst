@@ -1716,6 +1716,8 @@ void work_i(const size_t local_num) {
 					CloseHandle(ifile);
 					files.clear();
 					VirtualFree(cache, 0, MEM_RELEASE);
+					VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
+
 					//if (use_boost) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
 					return;
 				}
@@ -1725,6 +1727,7 @@ void work_i(const size_t local_num) {
 		Log("\nClose file: ");	Log((char*)iter->Name.c_str()); Log(" [@ "); Log_llu((long long unsigned)((double)(end_time_read - start_time_read) * 1000 / pcFreq)); Log(" ms]");
 		CloseHandle(ifile);
 		VirtualFree(cache, 0, MEM_RELEASE);
+		VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
 	}
 	worker_progress[local_num].isAlive = false;
 	QueryPerformanceCounter((LARGE_INTEGER*)&end_work_time);
