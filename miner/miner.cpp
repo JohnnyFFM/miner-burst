@@ -270,9 +270,9 @@ int load_config(char const *const filename)
 		if (document.HasMember("WinSizeY") && (document["WinSizeY"].IsUint())) win_size_y = (short)document["WinSizeY"].GetUint();
 		Log_u(win_size_y);
 
-		Log("\POC2StartBlock: ");
+		Log("\nPOC2StartBlock: ");
 		if (document.HasMember("POC2StartBlock") && (document["POC2StartBlock"].IsUint())) POC2StartBlock = (short)document["POC2StartBlock"].GetUint64();
-		Log_u(win_size_y);
+		Log_llu(POC2StartBlock);
 
 #ifdef GPU_ON_C
 		Log("\nGPU_Platform: "); 
