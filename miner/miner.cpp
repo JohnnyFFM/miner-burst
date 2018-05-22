@@ -1596,6 +1596,7 @@ void work_i(const size_t local_num) {
 		unsigned long long MirrorStart;
 		DWORD Mirrorb = 0;
 		LARGE_INTEGER MirrorliDistanceToMove;
+		bool flip = false;
 
 		size_t acc = Get_index_acc(key);
 		for (unsigned long long n = 0; n < nonces; n += stagger)
@@ -1625,60 +1626,65 @@ void work_i(const size_t local_num) {
 						#endif
 					#endif
 				}
-				bytes = 0;
-				b = 0;
-				liDistanceToMove.QuadPart = start + i*64;
-				if (!SetFilePointerEx(ifile, liDistanceToMove, nullptr, FILE_BEGIN))
-				{
-					wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
-					continue;
-				}
-
-				do {
-					if (!ReadFile(ifile, &cache[bytes], (DWORD)(cache_size_local * 64), &b, NULL))
-					{
-						wattron(win_main, COLOR_PAIR(12));
-						wprintw(win_main, ("error ReadFile. code =" + iter->Path + iter->Name + "\n").c_str(), 0);
-						wattroff(win_main, COLOR_PAIR(12));
-						break;
-					}
-					bytes += b;
-					//wprintw(win_main, "%llu   %llu\n", bytes, readsize);
-				} while (bytes < cache_size_local * 64);
-
-				//Shuffle if file POC not matching network POC
+	
+				//Shuffle message if file POC not matching network POC
 				if (p2 != POC2 && i == 0) {
 					wattron(win_main, COLOR_PAIR(11));
 					wprintw(win_main, ("POC shuffling active for: " + iter->Path + iter->Name + "\n").c_str(), 0);
 					wattroff(win_main, COLOR_PAIR(11));
 				}
 
+				if (flip) goto poc2read;
+				//POC1 scoop read
+				poc1read:
+				bytes = 0;
+				b = 0;
+				liDistanceToMove.QuadPart = start + i * 64;
+				if (!SetFilePointerEx(ifile, liDistanceToMove, nullptr, FILE_BEGIN))
+				{
+					wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
+					continue;
+				}
+				do {
+					if (!ReadFile(ifile, &cache[bytes], (DWORD)(cache_size_local * 64), &b, NULL))
+					{
+						wattron(win_main, COLOR_PAIR(12));
+						wprintw(win_main, ("error P1 ReadFile. code =" + iter->Path + iter->Name + "\n").c_str(), 0);
+						wattroff(win_main, COLOR_PAIR(12));
+						break;
+					}
+					bytes += b;
+				} while (bytes < cache_size_local * 64);
+				if (flip) goto readend;
+
+				poc2read:
+				//PoC2 mirror scoop read
 				if (p2 != POC2) {
-					//PoC2 Read Mirror Scoop
 					bytes = 0;
 					Mirrorb = 0;
 					MirrorliDistanceToMove.QuadPart = MirrorStart + i * 64;
-
 					if (!SetFilePointerEx(ifile, MirrorliDistanceToMove, nullptr, FILE_BEGIN))
 					{
 						wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
 						continue;
 					}
-
 					do {
 						if (!ReadFile(ifile, &MirrorCache[bytes], (DWORD)(cache_size_local * 64), &Mirrorb, NULL))
 						{
 							wattron(win_main, COLOR_PAIR(12));
-							wprintw(win_main, "error ReadFile. code = %llu\n", GetLastError(), 0);
+							wprintw(win_main, "error P2 ReadFile. code = %llu\n", GetLastError(), 0);
 							wattroff(win_main, COLOR_PAIR(12));
 							break;
 						}
 						bytes += Mirrorb;
-
 					} while (bytes < cache_size_local * 64);
+				}
+				if (flip) goto poc1read;
+				readend:
+				flip = !flip;
 
-					//PoC2
-					//Merge data to Cache
+				//PoC2 Merge data to Cache
+				if (p2 != POC2) {
 					for (unsigned long t = 0; t < bytes; t += 64) {
 						memcpy(&cache[t + 32], &MirrorCache[t + 32], 32); //copy second hash to correct place.
 					}
