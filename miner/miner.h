@@ -110,7 +110,7 @@ bool use_boost = false;				// Использовать повышенный приоритет для потоков
 bool show_winner = false;			// показывать победителя
 //short can_generate = 0;				// 0 - disable; 1 - can start generate; 2 - already run generator
 //POC2: HF Block where POC2 gets active
-unsigned long long POC2StartBlock = 500000;
+unsigned long long POC2StartBlock = 502000;
 //indicates if POC2 is active
 bool POC2 = false;
 
