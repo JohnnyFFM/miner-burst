@@ -2878,8 +2878,8 @@ int main(int argc, char **argv) {
 	wattroff(win_main, COLOR_PAIR(12));
 	wattron(win_main, COLOR_PAIR(4));
 	wprintw(win_main, "\nProgramming: dcct (Linux) & Blago (Windows)\n", 0);
+	wprintw(win_main, "POC2 mod: Quibus & Johnny (5/2018)\n", 0);
 	wattroff(win_main, COLOR_PAIR(4));
-
 
 	GetCPUInfo();
 
