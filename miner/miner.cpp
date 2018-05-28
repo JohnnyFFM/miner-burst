@@ -271,7 +271,7 @@ int load_config(char const *const filename)
 		Log_u(win_size_y);
 
 		Log("\nPOC2StartBlock: ");
-		if (document.HasMember("POC2StartBlock") && (document["POC2StartBlock"].IsUint())) POC2StartBlock = (short)document["POC2StartBlock"].GetUint64();
+		if (document.HasMember("POC2StartBlock") && (document["POC2StartBlock"].IsUint64())) POC2StartBlock = document["POC2StartBlock"].GetUint64();
 		Log_llu(POC2StartBlock);
 
 #ifdef GPU_ON_C
