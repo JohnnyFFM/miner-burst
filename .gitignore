@@ -47,3 +47,7 @@
 /miner/x64/Release/miner.obj
 /miner/x64/Release/miner.asm
 /miner/miner.vcxproj.user
+/miner/stat.csv
+/miner/miner.conf
+/x64/Debug/miner.conf
+/x64/Debug/pdcurses.lib

@@ -1442,6 +1442,131 @@ void procscoop_asm(const unsigned long long nonce, const unsigned long long n, c
 	}
 }
 
+void th_read(HANDLE const * const ifile, unsigned long long const * const start, unsigned long long const * const MirrorStart, bool * const cont, unsigned long long * const bytes, t_files const * const iter, bool * const flip, bool const * const p2, unsigned long long const i, unsigned long long const stagger, size_t * const cache_size_local, char * const cache, char * const MirrorCache) {
+	if (i + *cache_size_local > stagger)
+	{
+		*cache_size_local = stagger - i;  // остаток
+#ifdef __AVX2__
+		if (*cache_size_local < 8)
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "WARNING: %llu\n", *cache_size_local);
+			wattroff(win_main, COLOR_PAIR(12));
+		}
+#else
+#ifdef __AVX__
+		if (*cache_size_local < 4)
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "WARNING: %llu\n", *cache_size_local);
+			wattroff(win_main, COLOR_PAIR(12));
+		}
+#endif
+#endif
+	}
+	//Shuffle message if file POC not matching network POC
+	if (*p2 != POC2 && i == 0) {
+		wattron(win_main, COLOR_PAIR(11));
+		wprintw(win_main, ("POC shuffling active for: " + iter->Path + iter->Name + "\n").c_str(), 0);
+		wattroff(win_main, COLOR_PAIR(11));
+	}
+	DWORD b = 0;
+	DWORD Mirrorb = 0;
+	LARGE_INTEGER liDistanceToMove;
+	LARGE_INTEGER MirrorliDistanceToMove;
+
+	//alternating front scoop back scoop
+	if (*flip) goto poc2read;
+
+
+	//POC1 scoop read
+poc1read:
+	*bytes = 0;
+	b = 0;
+	liDistanceToMove.QuadPart = *start + i * 64;
+	if (!SetFilePointerEx(*ifile, liDistanceToMove, nullptr, FILE_BEGIN))
+	{
+		wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
+		*cont = true;
+		return;
+	}
+	do {
+		if (!ReadFile(*ifile, &cache[*bytes], (DWORD)(*cache_size_local * 64), &b, NULL))
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, ("error P1 ReadFile. code =" + iter->Path + iter->Name + "\n").c_str(), 0);
+			wattroff(win_main, COLOR_PAIR(12));
+			break;
+		}
+		*bytes += b;
+	} while (*bytes < *cache_size_local * 64);
+	if (*flip) goto readend;
+
+poc2read:
+	//PoC2 mirror scoop read
+	if (*p2 != POC2) {
+		*bytes = 0;
+		Mirrorb = 0;
+		MirrorliDistanceToMove.QuadPart = *MirrorStart + i * 64;
+		if (!SetFilePointerEx(*ifile, MirrorliDistanceToMove, nullptr, FILE_BEGIN))
+		{
+			wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
+			*cont = true;
+			return;
+		}
+		do {
+			if (!ReadFile(*ifile, &MirrorCache[*bytes], (DWORD)(*cache_size_local * 64), &Mirrorb, NULL))
+			{
+				wattron(win_main, COLOR_PAIR(12));
+				wprintw(win_main, "error P2 ReadFile. code = %llu\n", GetLastError(), 0);
+				wattroff(win_main, COLOR_PAIR(12));
+				break;
+			}
+			*bytes += Mirrorb;
+		} while (*bytes < *cache_size_local * 64);
+	}
+	if (*flip) goto poc1read;
+readend:
+	*flip = !*flip;
+
+	//PoC2 Merge data to Cache
+	if (*p2 != POC2) {
+		for (unsigned long t = 0; t < *bytes; t += 64) {
+			memcpy(&cache[t + 32], &MirrorCache[t + 32], 32); //copy second hash to correct place.
+		}
+	}
+}
+
+void th_hash(t_files const * const iter, bool * const err, double * const sum_time_proc, __int64 const * const start_time_proc, LARGE_INTEGER li, const size_t local_num, unsigned long long const bytes, size_t const cache_size_local, unsigned long long const i, unsigned long long const nonce, unsigned long long const n, char const * const cache, size_t const acc) {
+
+	if (bytes == cache_size_local * 64)
+	{
+		QueryPerformanceCounter((LARGE_INTEGER*)start_time_proc);
+
+#ifdef __AVX2__
+		procscoop_m256_8(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX2
+#else
+#ifdef __AVX__
+		procscoop_m_4(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX
+#else
+		procscoop_sph(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block SSE4
+#endif
+#endif
+
+		QueryPerformanceCounter(&li);
+		*sum_time_proc += (double)(li.QuadPart - *start_time_proc);
+		worker_progress[local_num].Reads_bytes += bytes;
+	}
+	else
+	{
+		wattron(win_main, COLOR_PAIR(12));
+		wprintw(win_main, "Unexpected end of file %s\n", iter->Name.c_str(), 0);
+		wprintw(win_main, "Unexpected end of file %llu\n", bytes, 0);
+		wattroff(win_main, COLOR_PAIR(12));
+		*err = true;
+	}
+}
+
 void work_i(const size_t local_num) {
 	
 	__int64 start_work_time, end_work_time;
@@ -1485,6 +1610,7 @@ void work_i(const size_t local_num) {
 		stagger = iter->Stagger;
 		p2 = iter->P2;
 		tail = 0;
+
 		// Проверка кратности нонсов стаггеру
 		if ((double)(nonces % stagger) > DBL_EPSILON)
 		{
@@ -1553,7 +1679,7 @@ void work_i(const size_t local_num) {
 			//continue;
 		}
 
-		//Poc2 cache size added
+		//PoC2 cache size added (shuffling needs more cache)
 		if (p2 != POC2) {
 			if ((stagger == nonces) && (cache_size2 < stagger)) cache_size_local = cache_size2;  // оптимизированный плот
 			else cache_size_local = stagger; // обычный плот
@@ -1566,11 +1692,11 @@ void work_i(const size_t local_num) {
 		cache_size_local = (cache_size_local / (size_t)(bytesPerSector / 64)) * (size_t)(bytesPerSector / 64);
 		//wprintw(win_main, "round: %llu\n", cache_size_local);
 
-		char *cache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE);
+		char *cache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread1
+		char *cache2 = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread2
+		char *MirrorCache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //PoC2 cache
 		if (cache == nullptr) ShowMemErrorExit();
-
-		//PoC2 Cache
-		char *MirrorCache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE);
+		if (cache2 == nullptr) ShowMemErrorExit();
 		if (MirrorCache == nullptr) ShowMemErrorExit();
 
 		Log("\nRead file : ");	Log((char*)iter->Name.c_str());
@@ -1583,156 +1709,98 @@ void work_i(const size_t local_num) {
 			wprintw(win_main, "File \"%s\" error opening. code = %llu\n", iter->Name.c_str(), GetLastError(), 0);
 			wattroff(win_main, COLOR_PAIR(12));
 			VirtualFree(cache, 0, MEM_RELEASE);
+			VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
 			VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
 			continue;
 		}
 		files_size_per_thread += iter->Size;
-		
+
 		unsigned long long start, bytes;
-		DWORD b = 0;
+
 		LARGE_INTEGER liDistanceToMove;
 		
 		//PoC2 Vars
 		unsigned long long MirrorStart;
-		DWORD Mirrorb = 0;
+
 		LARGE_INTEGER MirrorliDistanceToMove;
 		bool flip = false;
+
 
 		size_t acc = Get_index_acc(key);
 		for (unsigned long long n = 0; n < nonces; n += stagger)
 		{
+			//Parallel Processing
+			
+			bool err = false;
+			bool cont = false;
 			start = n * 4096 * 64 + scoop * stagger * 64;
 			MirrorStart = n * 4096 * 64 + (4095 - scoop) * stagger * 64; //PoC2 Seek possition
-			for (unsigned long long i = 0; i < stagger; i += cache_size_local)
+			unsigned unsigned long steps = ceil(stagger / cache_size_local);
+			int test = 0;
+			//Initial Reading
+			th_read(&ifile,&start,&MirrorStart,&cont,&bytes,&(t_files)*iter,&flip,&p2,0,stagger,&cache_size_local,cache,MirrorCache);
+			if (cont) continue;
+			char *cachep;
+			
+			for (unsigned long long i = cache_size_local; i < stagger; i += cache_size_local)
 			{
-				if (i + cache_size_local > stagger)
-				{
-					cache_size_local = stagger - i;  // остаток
-					#ifdef __AVX2__
-					if (cache_size_local < 8)
-					{
-						wattron(win_main, COLOR_PAIR(12));
-						wprintw(win_main, "WARNING: %llu\n", cache_size_local);
-						wattroff(win_main, COLOR_PAIR(12));
-					}
-					#else
-						#ifdef __AVX__
-						if (cache_size_local < 4)
-						{
-						wattron(win_main, COLOR_PAIR(12));
-						wprintw(win_main, "WARNING: %llu\n", cache_size_local);
-						wattroff(win_main, COLOR_PAIR(12));
-						}
-						#endif
-					#endif
-				}
-	
-				//Shuffle message if file POC not matching network POC
-				if (p2 != POC2 && i == 0) {
-					wattron(win_main, COLOR_PAIR(11));
-					wprintw(win_main, ("POC shuffling active for: " + iter->Path + iter->Name + "\n").c_str(), 0);
-					wattroff(win_main, COLOR_PAIR(11));
-				}
 
-				if (flip) goto poc2read;
-				//POC1 scoop read
-				poc1read:
-				bytes = 0;
-				b = 0;
-				liDistanceToMove.QuadPart = start + i * 64;
-				if (!SetFilePointerEx(ifile, liDistanceToMove, nullptr, FILE_BEGIN))
-				{
-					wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
-					continue;
+				//Threadded Hashing
+				err = false;
+				if (test % 2 == 0) {
+					cachep = cache;
 				}
-				do {
-					if (!ReadFile(ifile, &cache[bytes], (DWORD)(cache_size_local * 64), &b, NULL))
-					{
-						wattron(win_main, COLOR_PAIR(12));
-						wprintw(win_main, ("error P1 ReadFile. code =" + iter->Path + iter->Name + "\n").c_str(), 0);
-						wattroff(win_main, COLOR_PAIR(12));
-						break;
-					}
-					bytes += b;
-				} while (bytes < cache_size_local * 64);
-				if (flip) goto readend;
+				else {
+					cachep = cache2;
+				}		
+				std::thread hash(th_hash, &(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cachep, acc);
 
-				poc2read:
-				//PoC2 mirror scoop read
-				if (p2 != POC2) {
-					bytes = 0;
-					Mirrorb = 0;
-					MirrorliDistanceToMove.QuadPart = MirrorStart + i * 64;
-					if (!SetFilePointerEx(ifile, MirrorliDistanceToMove, nullptr, FILE_BEGIN))
-					{
-						wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
-						continue;
-					}
-					do {
-						if (!ReadFile(ifile, &MirrorCache[bytes], (DWORD)(cache_size_local * 64), &Mirrorb, NULL))
-						{
-							wattron(win_main, COLOR_PAIR(12));
-							wprintw(win_main, "error P2 ReadFile. code = %llu\n", GetLastError(), 0);
-							wattroff(win_main, COLOR_PAIR(12));
-							break;
-						}
-						bytes += Mirrorb;
-					} while (bytes < cache_size_local * 64);
+				cont = false;
+				//Threadded Reading
+				if (test % 2 == 1) {
+					cachep = cache;
 				}
-				if (flip) goto poc1read;
-				readend:
-				flip = !flip;
+				else {
+					cachep = cache2;
+				}
+				std::thread read(th_read, &ifile, &start, &MirrorStart, &cont, &bytes, &(t_files)*iter, &flip, &p2, i, stagger, &cache_size_local, cachep, MirrorCache);
 
-				//PoC2 Merge data to Cache
-				if (p2 != POC2) {
-					for (unsigned long t = 0; t < bytes; t += 64) {
-						memcpy(&cache[t + 32], &MirrorCache[t + 32], 32); //copy second hash to correct place.
-					}
-				}
+				//Join threads
+				hash.join();
+				if (err) break;
+				read.join();
+				if (cont) continue;
+				test += 1;
 
-				if (bytes == cache_size_local * 64)
-				{
-					QueryPerformanceCounter((LARGE_INTEGER*)&start_time_proc);
-					#ifdef __AVX2__
-						procscoop_m256_8(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX2
-					#else
-						#ifdef __AVX__
-							procscoop_m_4(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX
-						#else
-							procscoop_sph(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block SSE4
-						#endif
-					#endif
-					QueryPerformanceCounter(&li);
-					sum_time_proc += (double)(li.QuadPart - start_time_proc);
-					worker_progress[local_num].Reads_bytes += bytes;
-					
-				}
-				else
-				{
-					wattron(win_main, COLOR_PAIR(12));
-					wprintw(win_main, "Unexpected end of file %s\n", iter->Name.c_str(), 0);
-					wattroff(win_main, COLOR_PAIR(12));
-					break;
-				}
-
-				if (stopThreads) // New block while processing: Stop.
+				// New block while processing: Stop.
+				if (stopThreads) 
 				{
 					worker_progress[local_num].isAlive = false;
 					Log("\nReading file: ");	Log((char*)iter->Name.c_str()); Log(" interrupted");
 					CloseHandle(ifile);
 					files.clear();
-					VirtualFree(cache, 0, MEM_RELEASE);
+					VirtualFree(cache, 0, MEM_RELEASE); //Cleanup Thread 1
+					VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
 					VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
-
-					//if (use_boost) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
 					return;
 				}
 			}
+
+			//Final Hashing
+			if (test % 2 == 0) {
+				th_hash(&(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, steps-1, nonce, n, cache, acc);
+			}
+			else {
+				th_hash(&(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, steps-1, nonce, n, cache2, acc);
+			}
+			if (err) break;
+
 		}
 		QueryPerformanceCounter((LARGE_INTEGER*)&end_time_read);
 		Log("\nClose file: ");	Log((char*)iter->Name.c_str()); Log(" [@ "); Log_llu((long long unsigned)((double)(end_time_read - start_time_read) * 1000 / pcFreq)); Log(" ms]");
 		CloseHandle(ifile);
 		VirtualFree(cache, 0, MEM_RELEASE);
+		VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
 		VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
 	}
 	worker_progress[local_num].isAlive = false;
@@ -1751,6 +1819,9 @@ void work_i(const size_t local_num) {
 	}
 	return;
 }
+
+
+
 
 char* GetJSON(char const *const req) {
 	const unsigned BUF_SIZE = 1024;
