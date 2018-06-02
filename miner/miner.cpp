@@ -1465,11 +1465,11 @@ void th_read(HANDLE const * const ifile, unsigned long long const * const start,
 #endif
 	}
 	//Shuffle message if file POC not matching network POC
-	if (*p2 != POC2 && i == 0) {
-		wattron(win_main, COLOR_PAIR(11));
-		wprintw(win_main, ("POC shuffling active for: " + iter->Path + iter->Name + "\n").c_str(), 0);
-		wattroff(win_main, COLOR_PAIR(11));
-	}
+	//if (*p2 != POC2 && i == 0) {
+	//	wattron(win_main, COLOR_PAIR(11));
+	//	wprintw(win_main, ("POC shuffling active for: " + iter->Path + iter->Name + "\n").c_str(), 0);
+	//	wattroff(win_main, COLOR_PAIR(11));
+	//}
 	DWORD b = 0;
 	DWORD Mirrorb = 0;
 	LARGE_INTEGER liDistanceToMove;
@@ -1598,6 +1598,7 @@ void work_i(const size_t local_num) {
 	DWORD bytesPerSector;
 	DWORD numberOfFreeClusters;
 	DWORD totalNumberOfClusters;
+	bool converted = false;
 
 	for (auto iter = files.begin(); iter != files.end(); ++iter)
 	{
@@ -1694,10 +1695,15 @@ void work_i(const size_t local_num) {
 
 		char *cache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread1
 		char *cache2 = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread2
-		char *MirrorCache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //PoC2 cache
+		char *MirrorCache;
+		if (p2 != POC2) {
+			MirrorCache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //PoC2 cache
+			if (MirrorCache == nullptr) ShowMemErrorExit();
+			converted = true;
+		}
 		if (cache == nullptr) ShowMemErrorExit();
 		if (cache2 == nullptr) ShowMemErrorExit();
-		if (MirrorCache == nullptr) ShowMemErrorExit();
+		
 
 		Log("\nRead file : ");	Log((char*)iter->Name.c_str());
 		
@@ -1710,7 +1716,7 @@ void work_i(const size_t local_num) {
 			wattroff(win_main, COLOR_PAIR(12));
 			VirtualFree(cache, 0, MEM_RELEASE);
 			VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
-			VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
+			if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
 			continue;
 		}
 		files_size_per_thread += iter->Size;
@@ -1781,7 +1787,7 @@ void work_i(const size_t local_num) {
 					files.clear();
 					VirtualFree(cache, 0, MEM_RELEASE); //Cleanup Thread 1
 					VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
-					VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
+					if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
 					return;
 				}
 			}
@@ -1801,7 +1807,7 @@ void work_i(const size_t local_num) {
 		CloseHandle(ifile);
 		VirtualFree(cache, 0, MEM_RELEASE);
 		VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
-		VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
+		if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
 	}
 	worker_progress[local_num].isAlive = false;
 	QueryPerformanceCounter((LARGE_INTEGER*)&end_work_time);
@@ -1814,7 +1820,12 @@ void work_i(const size_t local_num) {
 		char tbuffer[9];
 		_strtime_s(tbuffer);
 		wattron(win_main, COLOR_PAIR(7));
-		wprintw(win_main, "%s Thread \"%s\" @ %.1f sec (%.1f MB/s) CPU %.2f%%\n", tbuffer, path_loc_str.c_str(), thread_time, (double)(files_size_per_thread) / thread_time / 1024 / 1024 / 4096, sum_time_proc / pcFreq * 100 / thread_time, 0);
+		if (converted) {
+			wprintw(win_main, "%s Thread \"%s\" @ %.1f sec (%.1f MB/s) CPU %.2f%% (POC1<>POC2)\n", tbuffer, path_loc_str.c_str(), thread_time, (double)(files_size_per_thread) / thread_time / 1024 / 1024 / 4096, sum_time_proc / pcFreq * 100 / thread_time, 0);
+		}
+		else {
+			wprintw(win_main, "%s Thread \"%s\" @ %.1f sec (%.1f MB/s) CPU %.2f%%\n", tbuffer, path_loc_str.c_str(), thread_time, (double)(files_size_per_thread) / thread_time / 1024 / 1024 / 4096, sum_time_proc / pcFreq * 100 / thread_time, 0);
+		}
 		wattroff(win_main, COLOR_PAIR(7));
 	}
 	return;
