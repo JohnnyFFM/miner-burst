@@ -1794,10 +1794,10 @@ void work_i(const size_t local_num) {
 
 			//Final Hashing
 			if (test % 2 == 0) {
-				th_hash(&(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, steps-1, nonce, n, cache, acc);
+				th_hash(&(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, (steps-1)*cache_size_local, nonce, n, cache, acc);
 			}
 			else {
-				th_hash(&(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, steps-1, nonce, n, cache2, acc);
+				th_hash(&(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, (steps - 1)*cache_size_local, nonce, n, cache2, acc);
 			}
 			if (err) break;
 
@@ -1830,8 +1830,6 @@ void work_i(const size_t local_num) {
 	}
 	return;
 }
-
-
 
 
 char* GetJSON(char const *const req) {
