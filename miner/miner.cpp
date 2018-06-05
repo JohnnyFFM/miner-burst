@@ -450,12 +450,13 @@ size_t GetFiles(const std::string &str, std::vector <t_files> *p_files)
 									key, nonce, nonces, stagger, p2
 								});
 								count++;
+								continue;
 							}
 
 						}
 						//POC2 FILE
 						unsigned long long key, nonce, nonces;
-						if (sscanf_s(FindFileData.cFileName, "%llu_%llu_%llu_%llu", &key, &nonce, &nonces) == 3)
+						if (sscanf_s(FindFileData.cFileName, "%llu_%llu_%llu", &key, &nonce, &nonces) == 3)
 						{
 							bool p2 = true;
 							p_files->push_back({
@@ -1442,7 +1443,8 @@ void procscoop_asm(const unsigned long long nonce, const unsigned long long n, c
 	}
 }
 
-void th_read(HANDLE const * const ifile, unsigned long long const * const start, unsigned long long const * const MirrorStart, bool * const cont, unsigned long long * const bytes, t_files const * const iter, bool * const flip, bool const * const p2, unsigned long long const i, unsigned long long const stagger, size_t * const cache_size_local, char * const cache, char * const MirrorCache) {
+
+void th_read(HANDLE ifile, unsigned long long const start, unsigned long long const MirrorStart, bool * const cont, unsigned long long * const bytes, t_files const * const iter, bool * const flip, bool p2, unsigned long long const i, unsigned long long const stagger, size_t * const cache_size_local, char * const cache, char * const MirrorCache) {
 	if (i + *cache_size_local > stagger)
 	{
 		*cache_size_local = stagger - i;  // остаток
@@ -1464,12 +1466,7 @@ void th_read(HANDLE const * const ifile, unsigned long long const * const start,
 #endif
 #endif
 	}
-	//Shuffle message if file POC not matching network POC
-	//if (*p2 != POC2 && i == 0) {
-	//	wattron(win_main, COLOR_PAIR(11));
-	//	wprintw(win_main, ("POC shuffling active for: " + iter->Path + iter->Name + "\n").c_str(), 0);
-	//	wattroff(win_main, COLOR_PAIR(11));
-	//}
+
 	DWORD b = 0;
 	DWORD Mirrorb = 0;
 	LARGE_INTEGER liDistanceToMove;
@@ -1483,15 +1480,15 @@ void th_read(HANDLE const * const ifile, unsigned long long const * const start,
 poc1read:
 	*bytes = 0;
 	b = 0;
-	liDistanceToMove.QuadPart = *start + i * 64;
-	if (!SetFilePointerEx(*ifile, liDistanceToMove, nullptr, FILE_BEGIN))
+	liDistanceToMove.QuadPart = start + i * 64;
+	if (!SetFilePointerEx(ifile, liDistanceToMove, nullptr, FILE_BEGIN))
 	{
 		wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
 		*cont = true;
 		return;
 	}
 	do {
-		if (!ReadFile(*ifile, &cache[*bytes], (DWORD)(*cache_size_local * 64), &b, NULL))
+		if (!ReadFile(ifile, &cache[*bytes], (DWORD)(*cache_size_local * 64), &b, NULL))
 		{
 			wattron(win_main, COLOR_PAIR(12));
 			wprintw(win_main, ("error P1 ReadFile. code =" + iter->Path + iter->Name + "\n").c_str(), 0);
@@ -1504,18 +1501,18 @@ poc1read:
 
 poc2read:
 	//PoC2 mirror scoop read
-	if (*p2 != POC2) {
+	if (p2 != POC2) {
 		*bytes = 0;
 		Mirrorb = 0;
-		MirrorliDistanceToMove.QuadPart = *MirrorStart + i * 64;
-		if (!SetFilePointerEx(*ifile, MirrorliDistanceToMove, nullptr, FILE_BEGIN))
+		MirrorliDistanceToMove.QuadPart = MirrorStart + i * 64;
+		if (!SetFilePointerEx(ifile, MirrorliDistanceToMove, nullptr, FILE_BEGIN))
 		{
 			wprintw(win_main, "error SetFilePointerEx. code = %llu\n", GetLastError(), 0);
 			*cont = true;
 			return;
 		}
 		do {
-			if (!ReadFile(*ifile, &MirrorCache[*bytes], (DWORD)(*cache_size_local * 64), &Mirrorb, NULL))
+			if (!ReadFile(ifile, &MirrorCache[*bytes], (DWORD)(*cache_size_local * 64), &Mirrorb, NULL))
 			{
 				wattron(win_main, COLOR_PAIR(12));
 				wprintw(win_main, "error P2 ReadFile. code = %llu\n", GetLastError(), 0);
@@ -1530,31 +1527,31 @@ readend:
 	*flip = !*flip;
 
 	//PoC2 Merge data to Cache
-	if (*p2 != POC2) {
+	if (p2 != POC2) {
 		for (unsigned long t = 0; t < *bytes; t += 64) {
 			memcpy(&cache[t + 32], &MirrorCache[t + 32], 32); //copy second hash to correct place.
 		}
 	}
 }
-
-void th_hash(t_files const * const iter, bool * const err, double * const sum_time_proc, __int64 const * const start_time_proc, LARGE_INTEGER li, const size_t local_num, unsigned long long const bytes, size_t const cache_size_local, unsigned long long const i, unsigned long long const nonce, unsigned long long const n, char const * const cache, size_t const acc) {
-
+	
+void th_hash(std::string filename, t_files const * const iter, bool * const err, double * const sum_time_proc, const size_t &local_num, unsigned long long const bytes, size_t const cache_size_local, unsigned long long const i, unsigned long long const nonce, unsigned long long const n, char const * const cache, size_t const acc) {
+	LARGE_INTEGER li;
+	LARGE_INTEGER start_time_proc;
 	if (bytes == cache_size_local * 64)
 	{
-		QueryPerformanceCounter((LARGE_INTEGER*)start_time_proc);
-
+		QueryPerformanceCounter(&start_time_proc);
 #ifdef __AVX2__
-		procscoop_m256_8(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX2
+		procscoop_m256_8(n + nonce + i, cache_size_local, cache, acc, filename);// Process block AVX2
 #else
 #ifdef __AVX__
-		procscoop_m_4(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX
+		procscoop_m_4(n + nonce + i, cache_size_local, cache, acc, filename);// Process block AVX
 #else
-		procscoop_sph(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block SSE4
+		procscoop_sph(n + nonce + i, cache_size_local, cache, acc, filename);// Process block SSE4
 #endif
 #endif
 
 		QueryPerformanceCounter(&li);
-		*sum_time_proc += (double)(li.QuadPart - *start_time_proc);
+		*sum_time_proc += (double)(li.QuadPart - start_time_proc.QuadPart);
 		worker_progress[local_num].Reads_bytes += bytes;
 	}
 	else
@@ -1571,7 +1568,7 @@ void work_i(const size_t local_num) {
 	
 	__int64 start_work_time, end_work_time;
 	__int64 start_time_read, end_time_read;
-	__int64 start_time_proc;
+	
 	double sum_time_proc = 0;
 	LARGE_INTEGER li;
 	QueryPerformanceFrequency(&li);
@@ -1580,8 +1577,6 @@ void work_i(const size_t local_num) {
 		
 	if (use_boost)
 	{
-		//SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-		//SetThreadAffinityMask(GetCurrentThread(), 1 << (int)(working_threads));
 		SetThreadIdealProcessor(GetCurrentThread(), (DWORD)(local_num % std::thread::hardware_concurrency()) );
 	}
 	
@@ -1723,12 +1718,12 @@ void work_i(const size_t local_num) {
 
 		unsigned long long start, bytes;
 
-		LARGE_INTEGER liDistanceToMove;
+		LARGE_INTEGER liDistanceToMove = { 0 };
 		
 		//PoC2 Vars
 		unsigned long long MirrorStart;
 
-		LARGE_INTEGER MirrorliDistanceToMove;
+		LARGE_INTEGER MirrorliDistanceToMove = { 0 };
 		bool flip = false;
 
 
@@ -1741,42 +1736,42 @@ void work_i(const size_t local_num) {
 			bool cont = false;
 			start = n * 4096 * 64 + scoop * stagger * 64;
 			MirrorStart = n * 4096 * 64 + (4095 - scoop) * stagger * 64; //PoC2 Seek possition
-			unsigned unsigned long steps = ceil(stagger / cache_size_local);
-			int test = 0;
+			int count = 0;
+
 			//Initial Reading
-			th_read(&ifile,&start,&MirrorStart,&cont,&bytes,&(t_files)*iter,&flip,&p2,0,stagger,&cache_size_local,cache,MirrorCache);
+			th_read(ifile,start,MirrorStart,&cont,&bytes,&(t_files)*iter,&flip,p2,0,stagger,&cache_size_local,cache,MirrorCache);		
 			if (cont) continue;
-			char *cachep;
-			
-			for (unsigned long long i = cache_size_local; i < stagger; i += cache_size_local)
+			char *cachep;		
+			unsigned long long i;
+			for (i = cache_size_local; i < stagger; i += cache_size_local)
 			{
 
 				//Threadded Hashing
 				err = false;
-				if (test % 2 == 0) {
+				if (count % 2 == 0) {
 					cachep = cache;
 				}
 				else {
 					cachep = cache2;
 				}		
-				std::thread hash(th_hash, &(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cachep, acc);
+				std::thread hash(th_hash, iter->Name.c_str(), &(t_files)*iter, &err, &sum_time_proc, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cachep, acc);
 
 				cont = false;
 				//Threadded Reading
-				if (test % 2 == 1) {
+				if (count % 2 == 1) {
 					cachep = cache;
 				}
 				else {
 					cachep = cache2;
 				}
-				std::thread read(th_read, &ifile, &start, &MirrorStart, &cont, &bytes, &(t_files)*iter, &flip, &p2, i, stagger, &cache_size_local, cachep, MirrorCache);
+				std::thread read = std::thread(th_read, ifile, start, MirrorStart, &cont, &bytes, &(t_files)*iter, &flip, p2, i, stagger, &cache_size_local, cachep, MirrorCache);
 
 				//Join threads
 				hash.join();
 				if (err) break;
 				read.join();
 				if (cont) continue;
-				test += 1;
+				count += 1;
 
 				// New block while processing: Stop.
 				if (stopThreads) 
@@ -1793,11 +1788,11 @@ void work_i(const size_t local_num) {
 			}
 
 			//Final Hashing
-			if (test % 2 == 0) {
-				th_hash(&(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, (steps-1)*cache_size_local, nonce, n, cache, acc);
+			if (count % 2 == 0) {
+				th_hash(iter->Name.c_str(), &(t_files)*iter, &err, &sum_time_proc, local_num, bytes, cache_size_local, i- cache_size_local, nonce, n, cache, acc);
 			}
 			else {
-				th_hash(&(t_files)*iter, &err, &sum_time_proc, &start_time_proc, li, local_num, bytes, cache_size_local, (steps - 1)*cache_size_local, nonce, n, cache2, acc);
+				th_hash(iter->Name.c_str(), &(t_files)*iter, &err, &sum_time_proc, local_num, bytes, cache_size_local, i- cache_size_local, nonce, n, cache2, acc);
 			}
 			if (err) break;
 
@@ -2230,7 +2225,8 @@ void pollLocal2(void) {
 	timeout.tv_sec = 1;
 	timeout.tv_usec = 0;
 
-	bSuccess = WSAConnectByNameA(UpdaterSocket, (LPCSTR)updateraddr.c_str(), (LPCSTR)updaterport.c_str(), &dwLocalAddr, (SOCKADDR*)&LocalAddr, &dwRemoteAddr, (SOCKADDR*)&RemoteAddr, &timeout, NULL);
+	//bSuccess = WSAConnectByNameA(UpdaterSocket, (LPCSTR)updateraddr.c_str(), (LPCSTR)updaterport.c_str(), &dwLocalAddr, (SOCKADDR*)&LocalAddr, &dwRemoteAddr, (SOCKADDR*)&RemoteAddr, &timeout, NULL);
+	bSuccess = WSAConnectByNameW(UpdaterSocket, (LPWSTR)updateraddr.c_str(), (LPWSTR)updaterport.c_str(), &dwLocalAddr, (SOCKADDR*)&LocalAddr, &dwRemoteAddr, (SOCKADDR*)&RemoteAddr, &timeout, NULL);
 	if (!bSuccess) {
 		if (network_quality > 0) network_quality--;
 		Log("\n*! GMI: WsaConnectByName failed with error: "); Log_u(WSAGetLastError());
