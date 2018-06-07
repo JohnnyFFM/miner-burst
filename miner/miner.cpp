@@ -1491,7 +1491,7 @@ poc1read:
 		if (!ReadFile(ifile, &cache[*bytes], (DWORD)(*cache_size_local * 64), &b, NULL))
 		{
 			wattron(win_main, COLOR_PAIR(12));
-			wprintw(win_main, ("error P1 ReadFile. code =" + iter->Path + iter->Name + "\n").c_str(), 0);
+			wprintw(win_main, "error P1 ReadFile. code = %llu\n", GetLastError(), 0);
 			wattroff(win_main, COLOR_PAIR(12));
 			break;
 		}
@@ -1534,19 +1534,19 @@ readend:
 	}
 }
 	
-void th_hash(std::string filename, t_files const * const iter, bool * const err, double * const sum_time_proc, const size_t &local_num, unsigned long long const bytes, size_t const cache_size_local, unsigned long long const i, unsigned long long const nonce, unsigned long long const n, char const * const cache, size_t const acc) {
+void th_hash(t_files const * const iter, bool * const err, double * const sum_time_proc, const size_t &local_num, unsigned long long const bytes, size_t const cache_size_local, unsigned long long const i, unsigned long long const nonce, unsigned long long const n, char const * const cache, size_t const acc) {
 	LARGE_INTEGER li;
 	LARGE_INTEGER start_time_proc;
 	if (bytes == cache_size_local * 64)
 	{
 		QueryPerformanceCounter(&start_time_proc);
 #ifdef __AVX2__
-		procscoop_m256_8(n + nonce + i, cache_size_local, cache, acc, filename);// Process block AVX2
+		procscoop_m256_8(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX2
 #else
 #ifdef __AVX__
-		procscoop_m_4(n + nonce + i, cache_size_local, cache, acc, filename);// Process block AVX
+		procscoop_m_4(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX
 #else
-		procscoop_sph(n + nonce + i, cache_size_local, cache, acc, filename);// Process block SSE4
+		procscoop_sph(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block SSE4
 #endif
 #endif
 
@@ -1690,7 +1690,7 @@ void work_i(const size_t local_num) {
 
 		char *cache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread1
 		char *cache2 = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread2
-		char *MirrorCache;
+		char *MirrorCache = nullptr;
 		if (p2 != POC2) {
 			MirrorCache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //PoC2 cache
 			if (MirrorCache == nullptr) ShowMemErrorExit();
@@ -1739,7 +1739,7 @@ void work_i(const size_t local_num) {
 			int count = 0;
 
 			//Initial Reading
-			th_read(ifile,start,MirrorStart,&cont,&bytes,&(t_files)*iter,&flip,p2,0,stagger,&cache_size_local,cache,MirrorCache);		
+			th_read(ifile,start,MirrorStart,&cont,&bytes,&(*iter),&flip,p2,0,stagger,&cache_size_local,cache,MirrorCache);
 			if (cont) continue;
 			char *cachep;		
 			unsigned long long i;
@@ -1754,7 +1754,7 @@ void work_i(const size_t local_num) {
 				else {
 					cachep = cache2;
 				}		
-				std::thread hash(th_hash, iter->Name.c_str(), &(t_files)*iter, &err, &sum_time_proc, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cachep, acc);
+				std::thread hash(th_hash, &(*iter), &err, &sum_time_proc, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cachep, acc);
 
 				cont = false;
 				//Threadded Reading
@@ -1764,11 +1764,16 @@ void work_i(const size_t local_num) {
 				else {
 					cachep = cache2;
 				}
-				std::thread read = std::thread(th_read, ifile, start, MirrorStart, &cont, &bytes, &(t_files)*iter, &flip, p2, i, stagger, &cache_size_local, cachep, MirrorCache);
+				std::thread read = std::thread(th_read, ifile, start, MirrorStart, &cont, &bytes, &(*iter), &flip, p2, i, stagger, &cache_size_local, cachep, MirrorCache);
 
 				//Join threads
 				hash.join();
-				if (err) break;
+				if (err)
+				{
+					if (read.joinable())
+						read.detach();
+					break;
+				}
 				read.join();
 				if (cont) continue;
 				count += 1;
@@ -1789,10 +1794,10 @@ void work_i(const size_t local_num) {
 
 			//Final Hashing
 			if (count % 2 == 0) {
-				th_hash(iter->Name.c_str(), &(t_files)*iter, &err, &sum_time_proc, local_num, bytes, cache_size_local, i- cache_size_local, nonce, n, cache, acc);
+				th_hash(&(*iter), &err, &sum_time_proc, local_num, bytes, cache_size_local, i- cache_size_local, nonce, n, cache, acc);
 			}
 			else {
-				th_hash(iter->Name.c_str(), &(t_files)*iter, &err, &sum_time_proc, local_num, bytes, cache_size_local, i- cache_size_local, nonce, n, cache2, acc);
+				th_hash(&(*iter), &err, &sum_time_proc, local_num, bytes, cache_size_local, i- cache_size_local, nonce, n, cache2, acc);
 			}
 			if (err) break;
 

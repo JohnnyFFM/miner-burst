@@ -51,3 +51,10 @@
 /miner/miner.conf
 /x64/Debug/miner.conf
 /x64/Debug/pdcurses.lib
+/.vs/miner/v15/ipch/AutoPCH/5f0357811744ca1f/SPH_SHABAL.ipch
+/.vs/miner/v15/ipch/AutoPCH/f4ea216c61ff41f0
+/miner/x64/Debug/vc140.pdb
+/miner/x64/Debug/vc140.idb
+/miner/x64/Debug/vc120.pdb
+/miner/x64/Debug/vc120.idb
+/miner/x64/Release/vc141.pdb
