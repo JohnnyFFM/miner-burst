@@ -1444,6 +1444,293 @@ void procscoop_asm(const unsigned long long nonce, const unsigned long long n, c
 }
 
 
+void work_i(const size_t local_num)
+{
+
+	__int64 start_work_time, end_work_time;
+	__int64 start_time_read, end_time_read;
+
+	double sum_time_proc = 0;
+	LARGE_INTEGER li;
+	QueryPerformanceFrequency(&li);
+	double const pcFreq = double(li.QuadPart);
+	QueryPerformanceCounter((LARGE_INTEGER*)&start_work_time);
+
+	if (use_boost)
+	{
+		SetThreadIdealProcessor(GetCurrentThread(), (DWORD)(local_num % std::thread::hardware_concurrency()));
+	}
+
+	std::string const path_loc_str = paths_dir[local_num];
+	unsigned long long files_size_per_thread = 0;
+
+	Log("\nStart thread: ["); Log_llu(local_num); Log("]  ");	Log((char*)path_loc_str.c_str());
+
+	std::vector<t_files> files;
+	GetFiles(path_loc_str, &files);
+
+	size_t cache_size_local;
+	DWORD sectorsPerCluster;
+	DWORD bytesPerSector;
+	DWORD numberOfFreeClusters;
+	DWORD totalNumberOfClusters;
+	bool converted = false;
+
+	for (auto iter = files.begin(); iter != files.end(); ++iter)
+	{
+		unsigned long long key, nonce, nonces, stagger, tail;
+		bool p2;
+		QueryPerformanceCounter((LARGE_INTEGER*)&start_time_read);
+		key = iter->Key;
+		nonce = iter->StartNonce;
+		nonces = iter->Nonces;
+		stagger = iter->Stagger;
+		p2 = iter->P2;
+		tail = 0;
+
+		// Проверка кратности нонсов стаггеру
+		if ((double)(nonces % stagger) > DBL_EPSILON)
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "File %s wrong stagger?\n", iter->Name.c_str(), 0);
+			wattroff(win_main, COLOR_PAIR(12));
+		}
+
+		// Проверка на повреждения плота
+		if (nonces != (iter->Size) / (4096 * 64))
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "file \"%s\" name/size mismatch\n", iter->Name.c_str(), 0);
+			wattroff(win_main, COLOR_PAIR(12));
+			if (nonces != stagger)
+				nonces = (((iter->Size) / (4096 * 64)) / stagger) * stagger; //обрезаем плот по размеру и стаггеру
+			else
+				if (scoop > (iter->Size) / (stagger * 64)) //если номер скупа попадает в поврежденный смерженный плот, то пропускаем
+				{
+					wattron(win_main, COLOR_PAIR(12));
+					wprintw(win_main, "skipped\n", 0);
+					wattroff(win_main, COLOR_PAIR(12));
+					continue;
+				}
+		}
+
+		if (!GetDiskFreeSpaceA((iter->Path).c_str(), &sectorsPerCluster, &bytesPerSector, &numberOfFreeClusters, &totalNumberOfClusters))
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "GetDiskFreeSpace failed\n", 0);
+			wattroff(win_main, COLOR_PAIR(12));
+			continue;
+		}
+
+		// Если стаггер в плоте меньше чем размер сектора - пропускаем
+		if ((stagger * 64) < bytesPerSector)
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "stagger (%llu) must be >= %llu\n", stagger, bytesPerSector / 64, 0);
+			wattroff(win_main, COLOR_PAIR(12));
+			continue;
+		}
+
+		// Если нонсов в плоте меньше чем размер сектора - пропускаем
+		if ((nonces * 64) < bytesPerSector)
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "nonces (%llu) must be >= %llu\n", nonces, bytesPerSector / 64, 0);
+			wattroff(win_main, COLOR_PAIR(12));
+			continue;
+		}
+
+		// Если стаггер не выровнен по сектору - можем читать сдвигая последний стагер назад (доделать)
+		if ((stagger % (bytesPerSector / 64)) != 0)
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "stagger (%llu) must be a multiple of %llu\n", stagger, bytesPerSector / 64, 0);
+			//unsigned long long new_stagger = (stagger / (bytesPerSector / 64)) * (bytesPerSector / 64);
+			//tail = stagger - new_stagger;
+			//stagger = new_stagger;
+			//nonces = (nonces/stagger) * stagger;
+			//Нужно добавить остаток от предыдущего значения стаггера для компенсации сдвига по нонсам
+			//wprintw(win_main, "stagger changed to %llu\n", stagger, 0);
+			//wprintw(win_main, "nonces changed to %llu\n", nonces, 0);
+			wattroff(win_main, COLOR_PAIR(12));
+			//continue;
+		}
+
+		//PoC2 cache size added (shuffling needs more cache)
+		if (p2 != POC2) {
+			if ((stagger == nonces) && (cache_size2 < stagger)) cache_size_local = cache_size2;  // оптимизированный плот
+			else cache_size_local = stagger; // обычный плот
+		}
+		else {
+			if ((stagger == nonces) && (cache_size < stagger)) cache_size_local = cache_size;  // оптимизированный плот
+			else cache_size_local = stagger; // обычный плот
+		}
+
+		// Выравниваем cache_size_local по размеру сектора
+		cache_size_local = (cache_size_local / (size_t)(bytesPerSector / 64)) * (size_t)(bytesPerSector / 64);
+		//wprintw(win_main, "round: %llu\n", cache_size_local);
+
+		size_t cache_size_local_backup = cache_size_local;
+		char *cache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread1
+		char *cache2 = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread2
+		char *MirrorCache = nullptr;
+		if (p2 != POC2) {
+			MirrorCache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //PoC2 cache
+			if (MirrorCache == nullptr) ShowMemErrorExit();
+			converted = true;
+		}
+		if (cache == nullptr) ShowMemErrorExit();
+		if (cache2 == nullptr) ShowMemErrorExit();
+
+
+		Log("\nRead file : ");	Log((char*)iter->Name.c_str());
+
+		//wprintw(win_main, "%S \n", str2wstr(iter->Path + iter->Name).c_str());
+		HANDLE ifile = CreateFileA((iter->Path + iter->Name).c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, nullptr);
+		if (ifile == INVALID_HANDLE_VALUE)
+		{
+			wattron(win_main, COLOR_PAIR(12));
+			wprintw(win_main, "File \"%s\" error opening. code = %llu\n", iter->Name.c_str(), GetLastError(), 0);
+			wattroff(win_main, COLOR_PAIR(12));
+			VirtualFree(cache, 0, MEM_RELEASE);
+			VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
+			if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
+			continue;
+		}
+		files_size_per_thread += iter->Size;
+
+		unsigned long long start, bytes;
+
+		LARGE_INTEGER liDistanceToMove = { 0 };
+
+		//PoC2 Vars
+		unsigned long long MirrorStart;
+
+		LARGE_INTEGER MirrorliDistanceToMove = { 0 };
+		bool flip = false;
+
+
+		size_t acc = Get_index_acc(key);
+		for (unsigned long long n = 0; n < nonces; n += stagger)
+		{
+			cache_size_local = cache_size_local_backup;
+			//Parallel Processing
+			bool err = false;
+			bool cont = false;
+			start = n * 4096 * 64 + scoop * stagger * 64;
+			MirrorStart = n * 4096 * 64 + (4095 - scoop) * stagger * 64; //PoC2 Seek possition
+			int count = 0;
+
+			//Initial Reading
+			th_read(ifile, start, MirrorStart, &cont, &bytes, &(*iter), &flip, p2, 0, stagger, &cache_size_local, cache, MirrorCache);
+
+			char *cachep;
+			unsigned long long i;
+			for (i = cache_size_local; i < stagger; i += cache_size_local)
+			{
+
+				//Threadded Hashing
+				err = false;
+				if (count % 2 == 0) {
+					cachep = cache;
+				}
+				else {
+					cachep = cache2;
+				}
+
+				//check if hashing would fail
+				if (bytes != cache_size_local * 64)
+				{
+					wattron(win_main, COLOR_PAIR(12));
+					wprintw(win_main, "Unexpected end of file %s\n", iter->Name.c_str(), 0);
+					wattroff(win_main, COLOR_PAIR(12));
+					err = true;
+					break;
+				}
+
+				std::thread hash(th_hash, &(*iter), &sum_time_proc, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cachep, acc);
+
+				cont = false;
+				//Threadded Reading
+				if (count % 2 == 1) {
+					cachep = cache;
+				}
+				else {
+					cachep = cache2;
+				}
+				std::thread read = std::thread(th_read, ifile, start, MirrorStart, &cont, &bytes, &(*iter), &flip, p2, i, stagger, &cache_size_local, cachep, MirrorCache);
+
+				//Join threads
+				hash.join();
+				read.join();
+				count += 1;
+				if (cont) continue;
+
+				// New block while processing: Stop.
+				if (stopThreads)
+				{
+					worker_progress[local_num].isAlive = false;
+					Log("\nReading file: ");	Log((char*)iter->Name.c_str()); Log(" interrupted");
+					CloseHandle(ifile);
+					files.clear();
+					VirtualFree(cache, 0, MEM_RELEASE); //Cleanup Thread 1
+					VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
+					if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
+					return;
+				}
+			}
+
+			//Final Hashing
+			//check if hashing would fail
+			if (!err) {
+				if (bytes != cache_size_local * 64)
+				{
+					wattron(win_main, COLOR_PAIR(12));
+					wprintw(win_main, "Unexpected end of file %s\n", iter->Name.c_str(), 0);
+					wattroff(win_main, COLOR_PAIR(12));
+					err = true;
+				}
+			}
+			if (!err)
+			{
+				if (count % 2 == 0) {
+					th_hash(&(*iter), &sum_time_proc, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cache, acc);
+				}
+				else {
+					th_hash(&(*iter), &sum_time_proc, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cache2, acc);
+				}
+			}
+
+		}
+		QueryPerformanceCounter((LARGE_INTEGER*)&end_time_read);
+		Log("\nClose file: ");	Log((char*)iter->Name.c_str()); Log(" [@ "); Log_llu((long long unsigned)((double)(end_time_read - start_time_read) * 1000 / pcFreq)); Log(" ms]");
+		CloseHandle(ifile);
+		VirtualFree(cache, 0, MEM_RELEASE);
+		VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
+		if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
+	}
+	worker_progress[local_num].isAlive = false;
+	QueryPerformanceCounter((LARGE_INTEGER*)&end_work_time);
+
+	//if (use_boost) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+
+	double thread_time = (double)(end_work_time - start_work_time) / pcFreq;
+	if (use_debug)
+	{
+		char tbuffer[9];
+		_strtime_s(tbuffer);
+		wattron(win_main, COLOR_PAIR(7));
+		if (converted) {
+			wprintw(win_main, "%s Thread \"%s\" @ %.1f sec (%.1f MB/s) CPU %.2f%% (POC1<>POC2)\n", tbuffer, path_loc_str.c_str(), thread_time, (double)(files_size_per_thread) / thread_time / 1024 / 1024 / 4096, sum_time_proc / pcFreq * 100 / thread_time, 0);
+		}
+		else {
+			wprintw(win_main, "%s Thread \"%s\" @ %.1f sec (%.1f MB/s) CPU %.2f%%\n", tbuffer, path_loc_str.c_str(), thread_time, (double)(files_size_per_thread) / thread_time / 1024 / 1024 / 4096, sum_time_proc / pcFreq * 100 / thread_time, 0);
+		}
+		wattroff(win_main, COLOR_PAIR(7));
+	}
+	return;
+}
+
 void th_read(HANDLE ifile, unsigned long long const start, unsigned long long const MirrorStart, bool * const cont, unsigned long long * const bytes, t_files const * const iter, bool * const flip, bool p2, unsigned long long const i, unsigned long long const stagger, size_t * const cache_size_local, char * const cache, char * const MirrorCache) {
 	if (i + *cache_size_local > stagger)
 	{
@@ -1533,302 +1820,23 @@ readend:
 		}
 	}
 }
-	
-void th_hash(t_files const * const iter, bool * const err, double * const sum_time_proc, const size_t &local_num, unsigned long long const bytes, size_t const cache_size_local, unsigned long long const i, unsigned long long const nonce, unsigned long long const n, char const * const cache, size_t const acc) {
+
+void th_hash(t_files const * const iter, double * const sum_time_proc, const size_t &local_num, unsigned long long const bytes, size_t const cache_size_local, unsigned long long const i, unsigned long long const nonce, unsigned long long const n, char const * const cache, size_t const acc) {
 	LARGE_INTEGER li;
 	LARGE_INTEGER start_time_proc;
-	if (bytes == cache_size_local * 64)
-	{
-		QueryPerformanceCounter(&start_time_proc);
+	QueryPerformanceCounter(&start_time_proc);
 #ifdef __AVX2__
-		procscoop_m256_8(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX2
+	procscoop_m256_8(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX2
 #else
 #ifdef __AVX__
-		procscoop_m_4(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX
+	procscoop_m_4(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block AVX
 #else
-		procscoop_sph(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block SSE4
+	procscoop_sph(n + nonce + i, cache_size_local, cache, acc, iter->Name);// Process block SSE4
 #endif
 #endif
-
-		QueryPerformanceCounter(&li);
-		*sum_time_proc += (double)(li.QuadPart - start_time_proc.QuadPart);
-		worker_progress[local_num].Reads_bytes += bytes;
-	}
-	else
-	{
-		wattron(win_main, COLOR_PAIR(12));
-		wprintw(win_main, "Unexpected end of file %s\n", iter->Name.c_str(), 0);
-		wprintw(win_main, "Unexpected end of file %llu\n", bytes, 0);
-		wattroff(win_main, COLOR_PAIR(12));
-		*err = true;
-	}
-}
-
-void work_i(const size_t local_num) {
-	
-	__int64 start_work_time, end_work_time;
-	__int64 start_time_read, end_time_read;
-	
-	double sum_time_proc = 0;
-	LARGE_INTEGER li;
-	QueryPerformanceFrequency(&li);
-	double const pcFreq = double(li.QuadPart);
-	QueryPerformanceCounter((LARGE_INTEGER*)&start_work_time);
-		
-	if (use_boost)
-	{
-		SetThreadIdealProcessor(GetCurrentThread(), (DWORD)(local_num % std::thread::hardware_concurrency()) );
-	}
-	
-	std::string const path_loc_str = paths_dir[local_num];
-	unsigned long long files_size_per_thread = 0;
-		
-	Log("\nStart thread: ["); Log_llu(local_num); Log("]  ");	Log((char*)path_loc_str.c_str());
-
-	std::vector<t_files> files;
-	GetFiles(path_loc_str, &files);
-	
-	size_t cache_size_local;
-	DWORD sectorsPerCluster;
-	DWORD bytesPerSector;
-	DWORD numberOfFreeClusters;
-	DWORD totalNumberOfClusters;
-	bool converted = false;
-
-	for (auto iter = files.begin(); iter != files.end(); ++iter)
-	{
-		unsigned long long key, nonce, nonces, stagger, tail;
-		bool p2;
-		QueryPerformanceCounter((LARGE_INTEGER*)&start_time_read);
-		key = iter->Key;
-		nonce = iter->StartNonce;
-		nonces = iter->Nonces;
-		stagger = iter->Stagger;
-		p2 = iter->P2;
-		tail = 0;
-
-		// Проверка кратности нонсов стаггеру
-		if ((double)(nonces % stagger) > DBL_EPSILON)
-		{
-			wattron(win_main, COLOR_PAIR(12));
-			wprintw(win_main, "File %s wrong stagger?\n", iter->Name.c_str(), 0);
-			wattroff(win_main, COLOR_PAIR(12));
-		}
-
-		// Проверка на повреждения плота
-		if (nonces != (iter->Size) / (4096 * 64)) 
-		{
-			wattron(win_main, COLOR_PAIR(12));
-			wprintw(win_main, "file \"%s\" name/size mismatch\n", iter->Name.c_str(), 0);
-			wattroff(win_main, COLOR_PAIR(12));
-			if (nonces != stagger)
-				nonces = (((iter->Size) / (4096 * 64)) / stagger) * stagger; //обрезаем плот по размеру и стаггеру
-			else
-			if (scoop > (iter->Size) / (stagger * 64)) //если номер скупа попадает в поврежденный смерженный плот, то пропускаем
-			{
-				wattron(win_main, COLOR_PAIR(12));
-				wprintw(win_main, "skipped\n", 0);
-				wattroff(win_main, COLOR_PAIR(12));
-				continue;
-			}
-		}
-
-		if (!GetDiskFreeSpaceA((iter->Path).c_str(), &sectorsPerCluster, &bytesPerSector, &numberOfFreeClusters, &totalNumberOfClusters))
-		{
-			wattron(win_main, COLOR_PAIR(12));
-			wprintw(win_main, "GetDiskFreeSpace failed\n", 0);
-			wattroff(win_main, COLOR_PAIR(12));
-			continue;
-		}
-
-		// Если стаггер в плоте меньше чем размер сектора - пропускаем
-		if ((stagger * 64) < bytesPerSector)
-		{
-			wattron(win_main, COLOR_PAIR(12));
-			wprintw(win_main, "stagger (%llu) must be >= %llu\n", stagger, bytesPerSector/64, 0);
-			wattroff(win_main, COLOR_PAIR(12));
-			continue;
-		}
-
-		// Если нонсов в плоте меньше чем размер сектора - пропускаем
-		if ((nonces * 64) < bytesPerSector)
-		{
-			wattron(win_main, COLOR_PAIR(12));
-			wprintw(win_main, "nonces (%llu) must be >= %llu\n", nonces, bytesPerSector/64, 0);
-			wattroff(win_main, COLOR_PAIR(12));
-			continue;
-		}
-
-		// Если стаггер не выровнен по сектору - можем читать сдвигая последний стагер назад (доделать)
-		if ((stagger % (bytesPerSector/64)) != 0)
-		{
-			wattron(win_main, COLOR_PAIR(12));
-			wprintw(win_main, "stagger (%llu) must be a multiple of %llu\n", stagger, bytesPerSector / 64, 0);
-			//unsigned long long new_stagger = (stagger / (bytesPerSector / 64)) * (bytesPerSector / 64);
-			//tail = stagger - new_stagger;
-			//stagger = new_stagger;
-			//nonces = (nonces/stagger) * stagger;
-			//Нужно добавить остаток от предыдущего значения стаггера для компенсации сдвига по нонсам
-			//wprintw(win_main, "stagger changed to %llu\n", stagger, 0);
-			//wprintw(win_main, "nonces changed to %llu\n", nonces, 0);
-			wattroff(win_main, COLOR_PAIR(12));
-			//continue;
-		}
-
-		//PoC2 cache size added (shuffling needs more cache)
-		if (p2 != POC2) {
-			if ((stagger == nonces) && (cache_size2 < stagger)) cache_size_local = cache_size2;  // оптимизированный плот
-			else cache_size_local = stagger; // обычный плот
-		}else{
-			if ((stagger == nonces) && (cache_size < stagger)) cache_size_local = cache_size;  // оптимизированный плот
-			else cache_size_local = stagger; // обычный плот
-		}
-
-		// Выравниваем cache_size_local по размеру сектора
-		cache_size_local = (cache_size_local / (size_t)(bytesPerSector / 64)) * (size_t)(bytesPerSector / 64);
-		//wprintw(win_main, "round: %llu\n", cache_size_local);
-
-		char *cache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread1
-		char *cache2 = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //cache thread2
-		char *MirrorCache = nullptr;
-		if (p2 != POC2) {
-			MirrorCache = (char *)VirtualAlloc(nullptr, cache_size_local * 64, MEM_COMMIT, PAGE_READWRITE); //PoC2 cache
-			if (MirrorCache == nullptr) ShowMemErrorExit();
-			converted = true;
-		}
-		if (cache == nullptr) ShowMemErrorExit();
-		if (cache2 == nullptr) ShowMemErrorExit();
-		
-
-		Log("\nRead file : ");	Log((char*)iter->Name.c_str());
-		
-		//wprintw(win_main, "%S \n", str2wstr(iter->Path + iter->Name).c_str());
-		HANDLE ifile = CreateFileA((iter->Path + iter->Name).c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, nullptr);
-		if (ifile == INVALID_HANDLE_VALUE)
-		{
-			wattron(win_main, COLOR_PAIR(12));
-			wprintw(win_main, "File \"%s\" error opening. code = %llu\n", iter->Name.c_str(), GetLastError(), 0);
-			wattroff(win_main, COLOR_PAIR(12));
-			VirtualFree(cache, 0, MEM_RELEASE);
-			VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
-			if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
-			continue;
-		}
-		files_size_per_thread += iter->Size;
-
-		unsigned long long start, bytes;
-
-		LARGE_INTEGER liDistanceToMove = { 0 };
-		
-		//PoC2 Vars
-		unsigned long long MirrorStart;
-
-		LARGE_INTEGER MirrorliDistanceToMove = { 0 };
-		bool flip = false;
-
-
-		size_t acc = Get_index_acc(key);
-		for (unsigned long long n = 0; n < nonces; n += stagger)
-		{
-			//Parallel Processing
-			
-			bool err = false;
-			bool cont = false;
-			start = n * 4096 * 64 + scoop * stagger * 64;
-			MirrorStart = n * 4096 * 64 + (4095 - scoop) * stagger * 64; //PoC2 Seek possition
-			int count = 0;
-
-			//Initial Reading
-			th_read(ifile,start,MirrorStart,&cont,&bytes,&(*iter),&flip,p2,0,stagger,&cache_size_local,cache,MirrorCache);
-			if (cont) continue;
-			char *cachep;		
-			unsigned long long i;
-			for (i = cache_size_local; i < stagger; i += cache_size_local)
-			{
-
-				//Threadded Hashing
-				err = false;
-				if (count % 2 == 0) {
-					cachep = cache;
-				}
-				else {
-					cachep = cache2;
-				}		
-				std::thread hash(th_hash, &(*iter), &err, &sum_time_proc, local_num, bytes, cache_size_local, i - cache_size_local, nonce, n, cachep, acc);
-
-				cont = false;
-				//Threadded Reading
-				if (count % 2 == 1) {
-					cachep = cache;
-				}
-				else {
-					cachep = cache2;
-				}
-				std::thread read = std::thread(th_read, ifile, start, MirrorStart, &cont, &bytes, &(*iter), &flip, p2, i, stagger, &cache_size_local, cachep, MirrorCache);
-
-				//Join threads
-				hash.join();
-				if (err)
-				{
-					if (read.joinable())
-						read.detach();
-					break;
-				}
-				read.join();
-				if (cont) continue;
-				count += 1;
-
-				// New block while processing: Stop.
-				if (stopThreads) 
-				{
-					worker_progress[local_num].isAlive = false;
-					Log("\nReading file: ");	Log((char*)iter->Name.c_str()); Log(" interrupted");
-					CloseHandle(ifile);
-					files.clear();
-					VirtualFree(cache, 0, MEM_RELEASE); //Cleanup Thread 1
-					VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
-					if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
-					return;
-				}
-			}
-
-			//Final Hashing
-			if (count % 2 == 0) {
-				th_hash(&(*iter), &err, &sum_time_proc, local_num, bytes, cache_size_local, i- cache_size_local, nonce, n, cache, acc);
-			}
-			else {
-				th_hash(&(*iter), &err, &sum_time_proc, local_num, bytes, cache_size_local, i- cache_size_local, nonce, n, cache2, acc);
-			}
-			if (err) break;
-
-		}
-		QueryPerformanceCounter((LARGE_INTEGER*)&end_time_read);
-		Log("\nClose file: ");	Log((char*)iter->Name.c_str()); Log(" [@ "); Log_llu((long long unsigned)((double)(end_time_read - start_time_read) * 1000 / pcFreq)); Log(" ms]");
-		CloseHandle(ifile);
-		VirtualFree(cache, 0, MEM_RELEASE);
-		VirtualFree(cache2, 0, MEM_RELEASE); //Cleanup Thread 2
-		if (p2 != POC2) VirtualFree(MirrorCache, 0, MEM_RELEASE); //PoC2 Cleanup
-	}
-	worker_progress[local_num].isAlive = false;
-	QueryPerformanceCounter((LARGE_INTEGER*)&end_work_time);
-	
-	//if (use_boost) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
-
-	double thread_time = (double)(end_work_time - start_work_time) / pcFreq;
-	if (use_debug)
-	{
-		char tbuffer[9];
-		_strtime_s(tbuffer);
-		wattron(win_main, COLOR_PAIR(7));
-		if (converted) {
-			wprintw(win_main, "%s Thread \"%s\" @ %.1f sec (%.1f MB/s) CPU %.2f%% (POC1<>POC2)\n", tbuffer, path_loc_str.c_str(), thread_time, (double)(files_size_per_thread) / thread_time / 1024 / 1024 / 4096, sum_time_proc / pcFreq * 100 / thread_time, 0);
-		}
-		else {
-			wprintw(win_main, "%s Thread \"%s\" @ %.1f sec (%.1f MB/s) CPU %.2f%%\n", tbuffer, path_loc_str.c_str(), thread_time, (double)(files_size_per_thread) / thread_time / 1024 / 1024 / 4096, sum_time_proc / pcFreq * 100 / thread_time, 0);
-		}
-		wattroff(win_main, COLOR_PAIR(7));
-	}
-	return;
+	QueryPerformanceCounter(&li);
+	*sum_time_proc += (double)(li.QuadPart - start_time_proc.QuadPart);
+	worker_progress[local_num].Reads_bytes += bytes;
 }
 
 
